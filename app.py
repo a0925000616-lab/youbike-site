@@ -11,7 +11,7 @@ from streamlit_folium import st_folium
 urllib3.disable_warnings()
 
 # ==========================================
-# 台中市 YouBike 智慧查詢系統（最終穩定版）
+# 台中市 YouBike 智慧查詢系統（最終版）
 # 功能：
 # 1. 台中市站點查詢
 # 2. 行政區篩選
@@ -44,7 +44,7 @@ def fetch_data():
         res.raise_for_status()
         data = res.json()
 
-        # 台中資料格式：retVal 是字串格式 JSON
+        # 台中資料格式：retVal 是字串 JSON
         ret_val = data.get("retVal", "[]")
 
         if isinstance(ret_val, str):
@@ -116,7 +116,7 @@ df = df[df["啟用"] == 1].reset_index(drop=True)
 areas = ["全部"] + sorted([a for a in df["行政區"].dropna().unique().tolist() if a])
 selected_area = st.sidebar.selectbox("行政區", areas)
 
-# 先依行政區篩一層，讓站名清單更準
+# 先依行政區篩一層，讓站名清單更精準
 temp_df = df.copy()
 if selected_area != "全部":
     temp_df = temp_df[temp_df["行政區"] == selected_area]
@@ -186,7 +186,7 @@ for _, row in filtered.iterrows():
     if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
         continue
 
-    # 根據可借車數給顏色
+    # 根據可借車數設定顏色
     if row["可借"] >= 10:
         color = "green"
     elif row["可借"] >= 3:
@@ -211,10 +211,10 @@ for _, row in filtered.iterrows():
     ).add_to(m)
 
 # ===============================
-# 顯示主地圖
+# 顯示主地圖（縮小高度，避免下方空白太多）
 # ===============================
 st.subheader("🗺️ 站點地圖")
-map_data = st_folium(m, width=1000, height=600)
+map_data = st_folium(m, width=None, height=420)
 
 # ===============================
 # 點地圖找最近站點
@@ -301,7 +301,7 @@ if clicked:
             ).add_to(m2)
 
         st.subheader("🧭 最近站點定位圖")
-        st_folium(m2, width=1000, height=500)
+        st_folium(m2, width=None, height=380)
 
         st.subheader("🌐 Google Maps 導航")
         for _, row in nearest_df.iterrows():
@@ -312,12 +312,12 @@ if clicked:
         st.warning("目前無法計算最近站點。")
 
 else:
-    st.info("請先在地圖上點一下。")
+    st.caption("先在地圖上點一下，系統會幫你找最近 3 個站點。")
 
 # ===============================
 # 查詢結果表格
 # ===============================
-st.subheader("📋 查詢結果")
+st.markdown("### 📋 查詢結果")
 
 if filtered.empty:
     st.warning("目前沒有符合條件的站點。")
