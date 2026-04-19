@@ -3,29 +3,30 @@ import requests
 import pandas as pd
 import streamlit as st
 import folium
-from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 
 # ==========================================
-# YouBike 智慧查詢系統｜完整作品版
+# 台中市 YouBike 智慧查詢系統
 # 功能：
-# 1. 行政區篩選
-# 2. 站名關鍵字搜尋
-# 3. 最少可借車數篩選
-# 4. 熱區圖 / 站點圖切換
-# 5. 點地圖找最近 3 個站點
-# 6. Google Maps 導航
+# 1. 台中市站點查詢
+# 2. 行政區篩選
+# 3. 站名下拉選單
+# 4. 最少可借車數篩選
+# 5. 地圖站點顯示
+# 6. 點地圖找最近 3 個站點
+# 7. Google Maps 導航
 # ==========================================
 
 st.set_page_config(
-    page_title="YouBike 智慧查詢系統",
+    page_title="台中市 YouBike 智慧查詢系統",
     page_icon="🚲",
     layout="wide"
 )
 
-st.title("🚲 YouBike 智慧查詢系統")
-st.caption("查詢站點、查看熱區圖，並點地圖找最近站點")
+st.title("🚲 台中市 YouBike 智慧查詢系統")
+st.caption("查詢站點、查看地圖，並點地圖找最近站點")
 
+# YouBike 即時資料
 DATA_URL = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json"
 
 
@@ -49,7 +50,7 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 def build_dataframe(raw):
-    """把原始 JSON 整理成表格。"""
+    """把原始 JSON 整理成 DataFrame。"""
     rows = []
     for item in raw:
         rows.append({
@@ -77,11 +78,39 @@ if st.sidebar.button("🔄 重新更新資料"):
 raw_data = fetch_data()
 df = build_dataframe(raw_data)
 
+# ===============================
+# 只保留台中市資料
+# ===============================
+taichung_areas = [
+    "中區", "東區", "南區", "西區", "北區",
+    "西屯區", "南屯區", "北屯區",
+    "豐原區", "大里區", "太平區", "清水區",
+    "沙鹿區", "梧棲區", "大甲區", "東勢區",
+    "烏日區", "神岡區", "大肚區", "大雅區",
+    "后里區", "霧峰區", "潭子區", "龍井區",
+    "外埔區", "和平區", "石岡區", "大安區",
+    "新社區"
+]
+
+df = df[df["行政區"].isin(taichung_areas)].reset_index(drop=True)
+
+# 行政區下拉選單
 areas = ["全部"] + sorted([a for a in df["行政區"].dropna().unique().tolist() if a])
 selected_area = st.sidebar.selectbox("行政區", areas)
-keyword = st.sidebar.text_input("站名關鍵字", placeholder="例如：大安、公館、台北")
+
+# 先依行政區做一層篩選，讓站名清單更精準
+temp_df = df.copy()
+if selected_area != "全部":
+    temp_df = temp_df[temp_df["行政區"] == selected_area]
+
+# 站名下拉選單
+station_list = sorted(temp_df["站名"].dropna().unique().tolist())
+selected_station = st.sidebar.selectbox("選擇站名", ["全部"] + station_list)
+
+# 最少可借車數
 min_bikes = st.sidebar.slider("最少可借車數", 0, 40, 0)
-map_mode = st.sidebar.radio("地圖模式", ["熱區圖", "站點圖"], horizontal=True)
+
+# 是否只顯示可借 > 0
 show_only_available = st.sidebar.checkbox("只顯示可借 > 0", value=False)
 
 # ===============================
@@ -92,8 +121,8 @@ filtered = df.copy()
 if selected_area != "全部":
     filtered = filtered[filtered["行政區"] == selected_area]
 
-if keyword.strip():
-    filtered = filtered[filtered["站名"].str.contains(keyword.strip(), case=False, na=False)]
+if selected_station != "全部":
+    filtered = filtered[filtered["站名"] == selected_station]
 
 filtered = filtered[filtered["可借"] >= min_bikes]
 
@@ -114,9 +143,10 @@ with c3:
     st.metric("可還總數", int(filtered["可還"].sum()) if not filtered.empty else 0)
 
 # ===============================
-# 地圖中心
+# 地圖中心（台中市中心）
 # ===============================
-map_center = [25.04, 121.54]
+map_center = [24.1477, 120.6736]
+
 if not filtered.empty and filtered[["緯度", "經度"]].dropna().shape[0] > 0:
     map_center = [
         filtered["緯度"].dropna().mean(),
@@ -126,51 +156,42 @@ if not filtered.empty and filtered[["緯度", "經度"]].dropna().shape[0] > 0:
 m = folium.Map(location=map_center, zoom_start=13)
 
 # ===============================
-# 熱區圖 / 站點圖
+# 加入站點標記
 # ===============================
-if map_mode == "熱區圖":
-    heat_data = []
-    for _, row in filtered.iterrows():
-        if pd.notna(row["緯度"]) and pd.notna(row["經度"]):
-            heat_data.append([row["緯度"], row["經度"], max(row["可借"], 1)])
+for _, row in filtered.iterrows():
+    lat = row["緯度"]
+    lon = row["經度"]
 
-    if heat_data:
-        HeatMap(heat_data, radius=18, blur=16).add_to(m)
+    if pd.isna(lat) or pd.isna(lon):
+        continue
 
-else:
-    for _, row in filtered.iterrows():
-        lat = row["緯度"]
-        lon = row["經度"]
+    # 依可借車數決定標記顏色
+    if row["可借"] >= 10:
+        color = "green"
+    elif row["可借"] >= 3:
+        color = "orange"
+    else:
+        color = "red"
 
-        if pd.isna(lat) or pd.isna(lon):
-            continue
+    popup_html = f"""
+    <b>{row['站名']}</b><br>
+    行政區：{row['行政區']}<br>
+    可借：{row['可借']}<br>
+    可還：{row['可還']}<br>
+    地址：{row['地址']}
+    """
 
-        if row["可借"] >= 10:
-            color = "green"
-        elif row["可借"] >= 3:
-            color = "orange"
-        else:
-            color = "red"
-
-        popup_html = f"""
-        <b>{row['站名']}</b><br>
-        行政區：{row['行政區']}<br>
-        可借：{row['可借']}<br>
-        可還：{row['可還']}<br>
-        地址：{row['地址']}
-        """
-
-        folium.Marker(
-            [lat, lon],
-            popup=popup_html,
-            tooltip=row["站名"],
-            icon=folium.Icon(color=color)
-        ).add_to(m)
+    folium.Marker(
+        [lat, lon],
+        popup=popup_html,
+        tooltip=row["站名"],
+        icon=folium.Icon(color=color)
+    ).add_to(m)
 
 # ===============================
 # 顯示主地圖
 # ===============================
-st.subheader("🗺️ 地圖")
+st.subheader("🗺️ 站點地圖")
 map_data = st_folium(m, width=1000, height=600)
 
 # ===============================
