@@ -1,4 +1,5 @@
 import math
+import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -26,16 +27,22 @@ st.set_page_config(
 st.title("🚲 台中市 YouBike 智慧查詢系統")
 st.caption("查詢站點、查看地圖，並點地圖找最近站點")
 
-# YouBike 即時資料
-DATA_URL = "https://tcgbusfs.blob.core.windows.net/dotapp/youbike/v2/youbike_immediate.json"
+# 台中市政府官方 YouBike 2.0 即時資料
+DATA_URL = "https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.download?rid=ed5ef436-fb62-40ba-9ad7-a165504cd953"
 
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=600)
 def fetch_data():
-    """抓取 YouBike 即時資料，快取 60 秒。"""
-    res = requests.get(DATA_URL, timeout=15)
+    """抓取台中市 YouBike 即時資料。"""
+    res = requests.get(DATA_URL, timeout=20)
     res.raise_for_status()
-    return res.json()
+    data = res.json()
+
+    # retVal 是字串格式的 JSON，要再 parse 一次
+    ret_val = data.get("retVal", "[]")
+    if isinstance(ret_val, str):
+        return json.loads(ret_val)
+    return ret_val
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -54,14 +61,15 @@ def build_dataframe(raw):
     rows = []
     for item in raw:
         rows.append({
-            "站名": item.get("sna", ""),
+            "站名": item.get("sna", "").replace("YouBike2.0_", ""),
             "行政區": item.get("sarea", ""),
-            "可借": item.get("available_rent_bikes", 0) or 0,
-            "可還": item.get("available_return_bikes", 0) or 0,
-            "總車位": item.get("total", 0) or 0,
-            "緯度": item.get("latitude"),
-            "經度": item.get("longitude"),
-            "地址": item.get("ar", "")
+            "可借": int(item.get("sbi", 0) or 0),
+            "可還": int(item.get("bemp", 0) or 0),
+            "總車位": int(item.get("tot", 0) or 0),
+            "緯度": float(item.get("lat", 0) or 0),
+            "經度": float(item.get("lng", 0) or 0),
+            "地址": item.get("ar", ""),
+            "啟用": int(item.get("act", 0) or 0)
         })
     return pd.DataFrame(rows)
 
@@ -78,27 +86,14 @@ if st.sidebar.button("🔄 重新更新資料"):
 raw_data = fetch_data()
 df = build_dataframe(raw_data)
 
-# ===============================
-# 只保留台中市資料
-# ===============================
-taichung_areas = [
-    "中區", "東區", "南區", "西區", "北區",
-    "西屯區", "南屯區", "北屯區",
-    "豐原區", "大里區", "太平區", "清水區",
-    "沙鹿區", "梧棲區", "大甲區", "東勢區",
-    "烏日區", "神岡區", "大肚區", "大雅區",
-    "后里區", "霧峰區", "潭子區", "龍井區",
-    "外埔區", "和平區", "石岡區", "大安區",
-    "新社區"
-]
-
-df = df[df["行政區"].isin(taichung_areas)].reset_index(drop=True)
+# 只保留啟用中的站點
+df = df[df["啟用"] == 1].reset_index(drop=True)
 
 # 行政區下拉選單
 areas = ["全部"] + sorted([a for a in df["行政區"].dropna().unique().tolist() if a])
 selected_area = st.sidebar.selectbox("行政區", areas)
 
-# 先依行政區做一層篩選，讓站名清單更精準
+# 先依行政區篩一層，讓站名清單更精準
 temp_df = df.copy()
 if selected_area != "全部":
     temp_df = temp_df[temp_df["行政區"] == selected_area]
@@ -108,7 +103,7 @@ station_list = sorted(temp_df["站名"].dropna().unique().tolist())
 selected_station = st.sidebar.selectbox("選擇站名", ["全部"] + station_list)
 
 # 最少可借車數
-min_bikes = st.sidebar.slider("最少可借車數", 0, 40, 0)
+min_bikes = st.sidebar.slider("最少可借車數", 0, 80, 0)
 
 # 是否只顯示可借 > 0
 show_only_available = st.sidebar.checkbox("只顯示可借 > 0", value=False)
@@ -162,10 +157,9 @@ for _, row in filtered.iterrows():
     lat = row["緯度"]
     lon = row["經度"]
 
-    if pd.isna(lat) or pd.isna(lon):
+    if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
         continue
 
-    # 依可借車數決定標記顏色
     if row["可借"] >= 10:
         color = "green"
     elif row["可借"] >= 3:
@@ -178,6 +172,7 @@ for _, row in filtered.iterrows():
     行政區：{row['行政區']}<br>
     可借：{row['可借']}<br>
     可還：{row['可還']}<br>
+    總車位：{row['總車位']}<br>
     地址：{row['地址']}
     """
 
@@ -211,7 +206,7 @@ if clicked:
         lat = row["緯度"]
         lon = row["經度"]
 
-        if pd.isna(lat) or pd.isna(lon):
+        if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
             continue
 
         dist = haversine(click_lat, click_lon, lat, lon)
