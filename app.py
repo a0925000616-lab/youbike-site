@@ -1,21 +1,26 @@
 import math
 import json
 import requests
+import urllib3
 import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
+# 關閉 SSL 警告
+urllib3.disable_warnings()
+
 # ==========================================
-# 台中市 YouBike 智慧查詢系統
+# 台中市 YouBike 智慧查詢系統（最終穩定版）
 # 功能：
 # 1. 台中市站點查詢
 # 2. 行政區篩選
 # 3. 站名下拉選單
 # 4. 最少可借車數篩選
-# 5. 地圖站點顯示
-# 6. 點地圖找最近 3 個站點
-# 7. Google Maps 導航
+# 5. 只顯示可借 > 0
+# 6. 地圖站點顯示
+# 7. 點地圖找最近 3 個站點
+# 8. Google Maps 導航
 # ==========================================
 
 st.set_page_config(
@@ -33,35 +38,46 @@ DATA_URL = "https://newdatacenter.taichung.gov.tw/api/v1/no-auth/resource.downlo
 
 @st.cache_data(ttl=600)
 def fetch_data():
-    """抓取台中市 YouBike 即時資料。"""
-    res = requests.get(DATA_URL, timeout=20)
-    res.raise_for_status()
-    data = res.json()
+    """抓取台中市 YouBike 即時資料（修正 SSL 問題）"""
+    try:
+        res = requests.get(DATA_URL, timeout=20, verify=False)
+        res.raise_for_status()
+        data = res.json()
 
-    # retVal 是字串格式的 JSON，要再 parse 一次
-    ret_val = data.get("retVal", "[]")
-    if isinstance(ret_val, str):
-        return json.loads(ret_val)
-    return ret_val
+        # 台中資料格式：retVal 是字串格式 JSON
+        ret_val = data.get("retVal", "[]")
+
+        if isinstance(ret_val, str):
+            return json.loads(ret_val)
+
+        return ret_val
+
+    except Exception as e:
+        st.error(f"資料抓取失敗：{e}")
+        return []
 
 
 def haversine(lat1, lon1, lat2, lon2):
-    """計算兩點距離（公尺）。"""
+    """計算兩點距離（公尺）"""
     r = 6371000
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+
     dlat = lat2 - lat1
     dlon = lon2 - lon1
+
     a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
     c = 2 * math.asin(math.sqrt(a))
+
     return r * c
 
 
 def build_dataframe(raw):
-    """把原始 JSON 整理成 DataFrame。"""
+    """把原始 JSON 整理成 DataFrame"""
     rows = []
+
     for item in raw:
         rows.append({
-            "站名": item.get("sna", "").replace("YouBike2.0_", ""),
+            "站名": str(item.get("sna", "")).replace("YouBike2.0_", ""),
             "行政區": item.get("sarea", ""),
             "可借": int(item.get("sbi", 0) or 0),
             "可還": int(item.get("bemp", 0) or 0),
@@ -71,6 +87,7 @@ def build_dataframe(raw):
             "地址": item.get("ar", ""),
             "啟用": int(item.get("act", 0) or 0)
         })
+
     return pd.DataFrame(rows)
 
 
@@ -84,16 +101,22 @@ if st.sidebar.button("🔄 重新更新資料"):
     st.sidebar.success("資料已更新")
 
 raw_data = fetch_data()
+
+# 如果抓不到資料就停止
+if not raw_data:
+    st.warning("目前無法取得台中市 YouBike 資料，請稍後再試。")
+    st.stop()
+
 df = build_dataframe(raw_data)
 
 # 只保留啟用中的站點
 df = df[df["啟用"] == 1].reset_index(drop=True)
 
-# 行政區下拉選單
+# 行政區選單
 areas = ["全部"] + sorted([a for a in df["行政區"].dropna().unique().tolist() if a])
 selected_area = st.sidebar.selectbox("行政區", areas)
 
-# 先依行政區篩一層，讓站名清單更精準
+# 先依行政區篩一層，讓站名清單更準
 temp_df = df.copy()
 if selected_area != "全部":
     temp_df = temp_df[temp_df["行政區"] == selected_area]
@@ -105,7 +128,7 @@ selected_station = st.sidebar.selectbox("選擇站名", ["全部"] + station_lis
 # 最少可借車數
 min_bikes = st.sidebar.slider("最少可借車數", 0, 80, 0)
 
-# 是否只顯示可借 > 0
+# 只顯示可借 > 0
 show_only_available = st.sidebar.checkbox("只顯示可借 > 0", value=False)
 
 # ===============================
@@ -130,10 +153,13 @@ filtered = filtered.reset_index(drop=True)
 # 統計資訊
 # ===============================
 c1, c2, c3 = st.columns(3)
+
 with c1:
     st.metric("站點數", len(filtered))
+
 with c2:
     st.metric("可借總數", int(filtered["可借"].sum()) if not filtered.empty else 0)
+
 with c3:
     st.metric("可還總數", int(filtered["可還"].sum()) if not filtered.empty else 0)
 
@@ -160,6 +186,7 @@ for _, row in filtered.iterrows():
     if pd.isna(lat) or pd.isna(lon) or (lat == 0 and lon == 0):
         continue
 
+    # 根據可借車數給顏色
     if row["可借"] >= 10:
         color = "green"
     elif row["可借"] >= 3:
@@ -202,6 +229,7 @@ if clicked:
     st.write(f"你點擊的位置：緯度 {click_lat:.6f} / 經度 {click_lon:.6f}")
 
     nearest_rows = []
+
     for _, row in filtered.iterrows():
         lat = row["緯度"]
         lon = row["經度"]
@@ -236,6 +264,7 @@ if clicked:
         # 最近站點定位圖
         m2 = folium.Map(location=[click_lat, click_lon], zoom_start=16)
 
+        # 你的位置
         folium.Marker(
             [click_lat, click_lon],
             popup="你的位置",
@@ -278,8 +307,10 @@ if clicked:
         for _, row in nearest_df.iterrows():
             nav_url = f"https://www.google.com/maps/dir/{click_lat},{click_lon}/{row['緯度']},{row['經度']}"
             st.markdown(f"- [{row['站名']}｜距離 {row['距離(公尺)']} 公尺]({nav_url})")
+
     else:
         st.warning("目前無法計算最近站點。")
+
 else:
     st.info("請先在地圖上點一下。")
 
@@ -287,6 +318,7 @@ else:
 # 查詢結果表格
 # ===============================
 st.subheader("📋 查詢結果")
+
 if filtered.empty:
     st.warning("目前沒有符合條件的站點。")
 else:
